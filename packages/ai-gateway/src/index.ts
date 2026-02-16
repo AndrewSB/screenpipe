@@ -3,7 +3,7 @@ import { Env, RequestBody, AuthResult } from './types';
 import { handleOptions, createSuccessResponse, createErrorResponse, addCorsHeaders } from './utils/cors';
 import { validateAuth } from './utils/auth';
 import { RateLimiter, checkRateLimit } from './utils/rate-limiter';
-import { trackUsage, getUsageStatus, isModelAllowed, TIER_CONFIG } from './services/usage-tracker';
+import { trackUsage, getUsageStatus, isModelAllowed, TIER_CONFIG, trackTranscriptionUsage, getTranscriptionStatus, estimateAudioMinutes } from './services/usage-tracker';
 import { handleChatCompletions } from './handlers/chat';
 import { handleModelListing } from './handlers/models';
 import { handleFileTranscription, handleWebSocketUpgrade } from './handlers/transcription';
@@ -31,16 +31,35 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
 
 		console.log('path', path);
 
-		// Handle WebSocket upgrade for real-time transcription (no auth required)
 		const upgradeHeader = request.headers.get('upgrade')?.toLowerCase();
-		if (path === '/v1/listen' && upgradeHeader === 'websocket') {
-			console.log('websocket request to /v1/listen detected, bypassing auth');
-			return await handleWebSocketUpgrade(request, env);
-		}
 
-		// Authenticate and get tier info for all other endpoints
+		// Authenticate and get tier info for all endpoints
 		const authResult = await validateAuth(request, env);
 		console.log('auth result:', { tier: authResult.tier, deviceId: authResult.deviceId });
+
+		// Handle WebSocket upgrade for real-time transcription (requires auth for metering)
+		if (path === '/v1/listen' && upgradeHeader === 'websocket') {
+			// WebSocket transcription: require logged-in user
+			if (authResult.tier === 'anonymous') {
+				return addCorsHeaders(createErrorResponse(401, JSON.stringify({
+					error: 'authentication_required',
+					message: 'Cloud transcription requires a screenpipe account. Please log in.',
+				})));
+			}
+			// Check transcription quota before opening WebSocket
+			const wsStatus = await getTranscriptionStatus(env, authResult.userId || authResult.deviceId, authResult.tier);
+			if (wsStatus.minutesRemaining <= 0 && authResult.tier !== 'subscribed') {
+				return addCorsHeaders(createErrorResponse(429, JSON.stringify({
+					error: 'transcription_quota_exhausted',
+					message: `You've used all ${wsStatus.minutesGranted} free transcription minutes. Buy credits or subscribe at screenpi.pe`,
+					minutes_used: wsStatus.minutesUsed,
+					minutes_granted: wsStatus.minutesGranted,
+					minutes_remaining: 0,
+					tier: authResult.tier,
+				})));
+			}
+			return await handleWebSocketUpgrade(request, env);
+		}
 
 		// Check rate limit with tier info
 		const rateLimit = await checkRateLimit(request, env, authResult);
@@ -51,7 +70,12 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
 		// Usage status endpoint - returns current usage without incrementing
 		if (path === '/v1/usage' && request.method === 'GET') {
 			const status = await getUsageStatus(env, authResult.deviceId, authResult.tier);
-			return addCorsHeaders(createSuccessResponse(status));
+			const userId = authResult.userId || authResult.deviceId;
+			const txStatus = await getTranscriptionStatus(env, userId, authResult.tier);
+			return addCorsHeaders(createSuccessResponse({
+				...status,
+				transcription: txStatus,
+			}));
 		}
 
 		// Chat completions - main AI endpoint
@@ -132,7 +156,63 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
 		}
 
 		if (path === '/v1/listen' && request.method === 'POST') {
-			return await handleFileTranscription(request, env);
+			// Require authentication for cloud transcription
+			if (authResult.tier === 'anonymous') {
+				return addCorsHeaders(createErrorResponse(401, JSON.stringify({
+					error: 'authentication_required',
+					message: 'Cloud transcription requires a screenpipe account. Please log in.',
+				})));
+			}
+
+			// Estimate audio duration from Content-Length
+			const contentLength = parseInt(request.headers.get('content-length') || '0', 10);
+			const sampleRate = parseInt(request.headers.get('sample_rate') || '16000', 10);
+			const audioMinutes = estimateAudioMinutes(contentLength, sampleRate);
+
+			// Track transcription usage (minutes-based)
+			const userId = authResult.userId || authResult.deviceId;
+			const txUsage = await trackTranscriptionUsage(env, userId, authResult.tier, audioMinutes);
+			if (!txUsage.allowed) {
+				return addCorsHeaders(createErrorResponse(429, JSON.stringify({
+					error: 'transcription_quota_exhausted',
+					message: `You've used all ${txUsage.minutesGranted} free transcription minutes. Buy credits or subscribe at screenpi.pe`,
+					minutes_used: txUsage.minutesUsed,
+					minutes_granted: txUsage.minutesGranted,
+					minutes_remaining: 0,
+					tier: authResult.tier,
+					credits_remaining: txUsage.creditsRemaining ?? 0,
+					upgrade_options: {
+						buy_credits: {
+							url: 'https://screenpi.pe/onboarding',
+							benefit: 'Credits extend your transcription limit',
+						},
+						subscribe: {
+							url: 'https://screenpi.pe/onboarding',
+							benefit: 'Unlimited cloud transcription + 500 credits/mo',
+							price: '$29/mo',
+						},
+					},
+				})));
+			}
+
+			// Transcribe and add quota headers to response
+			const txResponse = await handleFileTranscription(request, env);
+			const txNewResponse = new Response(txResponse.body, txResponse);
+			txNewResponse.headers.set('X-Transcription-Minutes-Used', String(txUsage.minutesUsed.toFixed(2)));
+			txNewResponse.headers.set('X-Transcription-Minutes-Granted', String(txUsage.minutesGranted.toFixed(2)));
+			txNewResponse.headers.set('X-Transcription-Minutes-Remaining', String(txUsage.minutesRemaining.toFixed(2)));
+			if (txUsage.paidVia === 'credits') {
+				txNewResponse.headers.set('X-Paid-Via', 'credits');
+				txNewResponse.headers.set('X-Credits-Remaining', String(txUsage.creditsRemaining ?? 0));
+			}
+			return txNewResponse;
+		}
+
+		// Transcription usage status endpoint
+		if (path === '/v1/transcription/usage' && request.method === 'GET') {
+			const userId = authResult.userId || authResult.deviceId;
+			const txStatus = await getTranscriptionStatus(env, userId, authResult.tier);
+			return addCorsHeaders(createSuccessResponse(txStatus));
 		}
 
 		if (path === '/v1/models' && request.method === 'GET') {

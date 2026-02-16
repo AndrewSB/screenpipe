@@ -4,9 +4,13 @@ use reqwest::{Client, Response};
 use screenpipe_core::Language;
 use serde_json::Value;
 use std::io::Cursor;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::transcription::deepgram::{CUSTOM_DEEPGRAM_API_TOKEN, DEEPGRAM_API_URL};
+
+/// Sentinel error message returned when cloud transcription quota is exhausted.
+/// The audio pipeline should catch this and fall back to local whisper.
+pub const TRANSCRIPTION_QUOTA_EXHAUSTED: &str = "TRANSCRIPTION_QUOTA_EXHAUSTED";
 
 pub async fn transcribe_with_deepgram(
     api_key: &str,
@@ -120,6 +124,20 @@ async fn handle_deepgram_response(
     match response {
         Ok(resp) => {
             debug!("received response from deepgram api");
+            let status = resp.status();
+
+            // Check for 429 (quota exhausted) from screenpipe proxy
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                warn!("cloud transcription quota exhausted (429), should fall back to local whisper");
+                return Err(anyhow::anyhow!(TRANSCRIPTION_QUOTA_EXHAUSTED));
+            }
+
+            // Check for 401 (auth required) from screenpipe proxy
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                warn!("cloud transcription auth required (401), should fall back to local whisper");
+                return Err(anyhow::anyhow!(TRANSCRIPTION_QUOTA_EXHAUSTED));
+            }
+
             match resp.json::<Value>().await {
                 Ok(result) => {
                     debug!("successfully parsed json response");
@@ -130,6 +148,15 @@ async fn handle_deepgram_response(
                         );
                         return Err(anyhow::anyhow!("Deepgram API error: {:?}", result));
                     }
+
+                    // Check for proxy-level quota error in JSON body
+                    if let Some(error) = result.get("error").and_then(|e| e.as_str()) {
+                        if error == "transcription_quota_exhausted" || error == "credits_exhausted" {
+                            warn!("cloud transcription quota exhausted (json error), should fall back to local whisper");
+                            return Err(anyhow::anyhow!(TRANSCRIPTION_QUOTA_EXHAUSTED));
+                        }
+                    }
+
                     let transcription = result["results"]["channels"][0]["alternatives"][0]
                         ["transcript"]
                         .as_str()

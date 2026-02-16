@@ -9,7 +9,7 @@ use crate::speaker::embedding::EmbeddingExtractor;
 use crate::speaker::embedding_manager::EmbeddingManager;
 use crate::speaker::prepare_segments;
 use crate::speaker::segment::SpeechSegment;
-use crate::transcription::deepgram::batch::transcribe_with_deepgram;
+use crate::transcription::deepgram::batch::{transcribe_with_deepgram, TRANSCRIPTION_QUOTA_EXHAUSTED};
 use crate::transcription::whisper::batch::process_with_whisper;
 use crate::utils::audio::resample;
 use crate::utils::ffmpeg::{get_new_file_path, write_audio_to_file};
@@ -21,7 +21,7 @@ use screenpipe_core::Language;
 use std::path::PathBuf;
 use std::{sync::Arc, sync::Mutex as StdMutex};
 use tokio::sync::Mutex;
-use tracing::error;
+use tracing::{error, warn};
 use whisper_rs::WhisperContext;
 
 use crate::{AudioInput, TranscriptionResult};
@@ -74,10 +74,17 @@ pub async fn stt(
             {
                 Ok(transcription) => Ok(transcription),
                 Err(e) => {
-                    error!(
-                        "device: {}, deepgram transcription failed, falling back to Whisper: {:?}",
-                        device, e
-                    );
+                    if e.to_string().contains(TRANSCRIPTION_QUOTA_EXHAUSTED) {
+                        warn!(
+                            "device: {}, cloud transcription quota exhausted, falling back to local Whisper",
+                            device
+                        );
+                    } else {
+                        error!(
+                            "device: {}, deepgram transcription failed, falling back to Whisper: {:?}",
+                            device, e
+                        );
+                    }
                     // Fallback to Whisper
                     process_with_whisper(audio, languages.clone(), whisper_context).await
                 }

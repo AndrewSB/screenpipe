@@ -194,6 +194,22 @@ export interface UsageStatus {
 	};
 }
 
+// Transcription usage result (minute-based, not daily-reset)
+export interface TranscriptionUsageResult {
+	minutesUsed: number;
+	minutesGranted: number;
+	minutesRemaining: number;
+	allowed: boolean;
+	/** Set when request was allowed by deducting a credit */
+	paidVia?: 'free' | 'credits';
+	creditsRemaining?: number;
+}
+
+// Transcription tier limits (minutes, not queries)
+export interface TranscriptionTierLimits {
+	totalMinutes: number; // lifetime minutes granted (0 = unlimited)
+}
+
 export interface ResponseUtils {
 	createSuccessResponse: (body: string | object, status?: number) => Response;
 	createErrorResponse: (status: number, message: string) => Response;

@@ -1,4 +1,4 @@
-import { Env, UserTier, TierLimits, UsageResult, UsageStatus } from '../types';
+import { Env, UserTier, TierLimits, UsageResult, UsageStatus, TranscriptionUsageResult, TranscriptionTierLimits } from '../types';
 
 const CLERK_ID_REGEX = /^user_[a-zA-Z0-9]+$/;
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -358,5 +358,179 @@ export function isModelAllowed(model: string, tier: UserTier): boolean {
     model.toLowerCase().includes(allowed.toLowerCase()) ||
     allowed.toLowerCase().includes(model.toLowerCase())
   );
+}
+
+// Transcription tier limits (minutes-based)
+// Only subscribed users (lifetime license or monthly) get cloud transcription
+export const TRANSCRIPTION_TIER_CONFIG: Record<UserTier, TranscriptionTierLimits> = {
+  anonymous: {
+    totalMinutes: 0, // no cloud transcription
+  },
+  logged_in: {
+    totalMinutes: 0, // no cloud transcription — must purchase to unlock
+  },
+  subscribed: {
+    totalMinutes: 0, // 0 = unlimited for subscribers
+  },
+};
+
+/**
+ * Estimate audio duration in minutes from WAV Content-Length.
+ * Assumes 16kHz, mono, 32-bit float (matches screenpipe's WAV format).
+ * Falls back to 0.5 min if Content-Length is missing or unparseable.
+ */
+export function estimateAudioMinutes(contentLength: number | null, sampleRate = 16000): number {
+  if (!contentLength || contentLength <= 44) return 0.5; // WAV header is 44 bytes, fallback to 30s
+  const audioBytes = contentLength - 44; // strip WAV header
+  const bytesPerSample = 4; // 32-bit float
+  const samples = audioBytes / bytesPerSample;
+  const seconds = samples / sampleRate;
+  return Math.max(0.01, seconds / 60); // minimum 0.01 min
+}
+
+/**
+ * Track transcription usage (minutes-based) and check if allowed.
+ * Creates a record on first use with the tier's granted minutes.
+ * Subscriber tier (totalMinutes=0) means unlimited.
+ */
+export async function trackTranscriptionUsage(
+  env: Env,
+  userId: string,
+  tier: UserTier,
+  audioMinutes: number,
+): Promise<TranscriptionUsageResult> {
+  const limits = TRANSCRIPTION_TIER_CONFIG[tier];
+
+  // Subscribers get unlimited transcription
+  if (limits.totalMinutes === 0 && tier === 'subscribed') {
+    // Still track for analytics but always allow
+    try {
+      await env.DB.prepare(`
+        INSERT INTO transcription_usage (user_id, minutes_used, minutes_granted, tier)
+        VALUES (?, ?, 0, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          minutes_used = minutes_used + ?,
+          tier = ?,
+          updated_at = datetime('now')
+      `).bind(userId, audioMinutes, tier, audioMinutes, tier).run();
+    } catch (e) {
+      console.error('transcription tracking error (subscriber):', e);
+    }
+    return { minutesUsed: 0, minutesGranted: 0, minutesRemaining: 999999, allowed: true };
+  }
+
+  // Anonymous users get no cloud transcription
+  if (tier === 'anonymous') {
+    return { minutesUsed: 0, minutesGranted: 0, minutesRemaining: 0, allowed: false };
+  }
+
+  try {
+    // Get or create usage record
+    const existing = await env.DB.prepare(
+      'SELECT minutes_used, minutes_granted FROM transcription_usage WHERE user_id = ?'
+    ).bind(userId).first<{ minutes_used: number; minutes_granted: number }>();
+
+    let minutesUsed: number;
+    let minutesGranted: number;
+
+    if (existing) {
+      minutesUsed = existing.minutes_used;
+      minutesGranted = existing.minutes_granted;
+    } else {
+      // First use — grant initial minutes
+      minutesGranted = limits.totalMinutes;
+      minutesUsed = 0;
+      await env.DB.prepare(
+        'INSERT INTO transcription_usage (user_id, minutes_used, minutes_granted, tier) VALUES (?, 0, ?, ?)'
+      ).bind(userId, minutesGranted, tier).run();
+    }
+
+    const remaining = Math.max(0, minutesGranted - minutesUsed);
+
+    // Check if this request would exceed quota
+    if (remaining < audioMinutes) {
+      // Try credit fallback (1 credit per minute of transcription)
+      const creditsNeeded = Math.ceil(audioMinutes);
+      const credit = await tryDeductCredit(env, userId, 'transcription');
+      if (credit.success) {
+        // Deducted 1 credit, allow request and track usage
+        await env.DB.prepare(
+          'UPDATE transcription_usage SET minutes_used = minutes_used + ?, tier = ?, updated_at = datetime(\'now\') WHERE user_id = ?'
+        ).bind(audioMinutes, tier, userId).run();
+        return {
+          minutesUsed: minutesUsed + audioMinutes,
+          minutesGranted,
+          minutesRemaining: Math.max(0, remaining - audioMinutes),
+          allowed: true,
+          paidVia: 'credits',
+          creditsRemaining: credit.remaining,
+        };
+      }
+
+      // No credits — reject
+      const balance = await getCreditBalance(env, userId);
+      return {
+        minutesUsed,
+        minutesGranted,
+        minutesRemaining: remaining,
+        allowed: false,
+        creditsRemaining: balance,
+      };
+    }
+
+    // Within quota — track and allow
+    await env.DB.prepare(
+      'UPDATE transcription_usage SET minutes_used = minutes_used + ?, tier = ?, updated_at = datetime(\'now\') WHERE user_id = ?'
+    ).bind(audioMinutes, tier, userId).run();
+
+    return {
+      minutesUsed: minutesUsed + audioMinutes,
+      minutesGranted,
+      minutesRemaining: Math.max(0, remaining - audioMinutes),
+      allowed: true,
+    };
+  } catch (error) {
+    console.error('Error tracking transcription usage:', error);
+    // On error, allow the request (fail open)
+    return { minutesUsed: 0, minutesGranted: limits.totalMinutes, minutesRemaining: limits.totalMinutes, allowed: true };
+  }
+}
+
+/**
+ * Get transcription usage status without incrementing
+ */
+export async function getTranscriptionStatus(
+  env: Env,
+  userId: string,
+  tier: UserTier,
+): Promise<{ minutesUsed: number; minutesGranted: number; minutesRemaining: number; tier: UserTier }> {
+  const limits = TRANSCRIPTION_TIER_CONFIG[tier];
+
+  if (tier === 'subscribed') {
+    return { minutesUsed: 0, minutesGranted: 0, minutesRemaining: 999999, tier };
+  }
+
+  if (tier === 'anonymous') {
+    return { minutesUsed: 0, minutesGranted: 0, minutesRemaining: 0, tier };
+  }
+
+  try {
+    const existing = await env.DB.prepare(
+      'SELECT minutes_used, minutes_granted FROM transcription_usage WHERE user_id = ?'
+    ).bind(userId).first<{ minutes_used: number; minutes_granted: number }>();
+
+    if (existing) {
+      return {
+        minutesUsed: existing.minutes_used,
+        minutesGranted: existing.minutes_granted,
+        minutesRemaining: Math.max(0, existing.minutes_granted - existing.minutes_used),
+        tier,
+      };
+    }
+  } catch (e) {
+    console.error('Error getting transcription status:', e);
+  }
+
+  return { minutesUsed: 0, minutesGranted: limits.totalMinutes, minutesRemaining: limits.totalMinutes, tier };
 }
 

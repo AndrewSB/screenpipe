@@ -68,23 +68,36 @@ impl EmbeddedServerConfig {
         info!("Building EmbeddedServerConfig from store: enable_ui_events={}, disable_audio={}, disable_vision={}",
               store.enable_ui_events, store.disable_audio, store.disable_vision);
 
-        // Fallback: if engine requires cloud auth but user is not logged in, use local whisper
+        // Resolve audio transcription engine:
+        // 1. Subscribed users (lifetime/monthly) auto-upgrade to screenpipe-cloud
+        // 2. Cloud requires login, deepgram requires API key — fall back to local if missing
         let audio_transcription_engine = {
             let engine = store.audio_transcription_engine.clone();
             let has_user_id = store.user.id.as_ref().map_or(false, |id| !id.is_empty());
+            let is_subscribed = store.user.cloud_subscribed.unwrap_or(false);
             let has_deepgram_key = !store.deepgram_api_key.is_empty()
                 && store.deepgram_api_key != "default";
 
-            match engine.as_str() {
-                "screenpipe-cloud" if !has_user_id => {
-                    warn!("screenpipe-cloud selected but user not logged in, falling back to whisper-large-v3-turbo");
-                    "whisper-large-v3-turbo".to_string()
+            // Auto-upgrade subscribed users to screenpipe-cloud (unless they explicitly chose something else like deepgram with their own key)
+            if is_subscribed && has_user_id && engine != "deepgram" {
+                info!("subscribed user detected, using screenpipe-cloud for audio transcription");
+                "screenpipe-cloud".to_string()
+            } else {
+                match engine.as_str() {
+                    "screenpipe-cloud" if !has_user_id => {
+                        warn!("screenpipe-cloud selected but user not logged in, falling back to whisper-large-v3-turbo");
+                        "whisper-large-v3-turbo".to_string()
+                    }
+                    "screenpipe-cloud" if !is_subscribed => {
+                        warn!("screenpipe-cloud selected but user not subscribed, falling back to whisper-large-v3-turbo");
+                        "whisper-large-v3-turbo".to_string()
+                    }
+                    "deepgram" if !has_deepgram_key => {
+                        warn!("deepgram selected but no API key configured, falling back to whisper-large-v3-turbo");
+                        "whisper-large-v3-turbo".to_string()
+                    }
+                    _ => engine,
                 }
-                "deepgram" if !has_deepgram_key => {
-                    warn!("deepgram selected but no API key configured, falling back to whisper-large-v3-turbo");
-                    "whisper-large-v3-turbo".to_string()
-                }
-                _ => engine,
             }
         };
 
