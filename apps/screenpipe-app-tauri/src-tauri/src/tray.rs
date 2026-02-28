@@ -234,9 +234,10 @@ fn create_dynamic_menu(
 
     // During onboarding: show minimal menu (version + quit only)
     if !onboarding_completed {
+        let commit_hash = option_env!("GIT_COMMIT_HASH").unwrap_or("unknown");
         menu_builder = menu_builder
             .item(
-                &MenuItemBuilder::with_id("version", format!("version {}", app.package_info().version))
+                &MenuItemBuilder::with_id("version", format!("version {} ({})", app.package_info().version, commit_hash))
                     .enabled(false)
                     .build(app)?,
             )
@@ -347,10 +348,11 @@ fn create_dynamic_menu(
 
     // Version and update items
     let is_beta = app.config().identifier.contains("beta");
+    let commit_hash = option_env!("GIT_COMMIT_HASH").unwrap_or("unknown");
     let version_text = if is_beta {
-        format!("Version {} (Beta)", app.package_info().version)
+        format!("Version {} ({}) (Beta)", app.package_info().version, commit_hash)
     } else {
-        format!("Version {}", app.package_info().version)
+        format!("Version {} ({})", app.package_info().version, commit_hash)
     };
     menu_builder = menu_builder
         .item(&PredefinedMenuItem::separator(app)?)
@@ -541,6 +543,9 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
                     let mut handle_guard = recording_state.handle.lock().await;
                     if let Some(handle) = handle_guard.take() {
                         handle.shutdown();
+                        // Give the tree walker and other tasks time to notice the stop
+                        // signal and exit cleanly before we tear down the runtime.
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                         info!("Screenpipe recording stopped successfully");
                     } else {
                         debug!("No recording running to stop");
