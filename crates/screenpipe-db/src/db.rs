@@ -2134,7 +2134,7 @@ impl DatabaseManager {
             ocr_fts_join = if query.trim().is_empty() {
                 ""
             } else {
-                "JOIN ocr_text_fts ON ocr_text.frame_id = ocr_text_fts.frame_id"
+                "JOIN ocr_text_fts ON ocr_text.rowid = ocr_text_fts.rowid"
             },
             frame_fts_condition = if frame_query.trim().is_empty() {
                 ""
@@ -2237,7 +2237,7 @@ impl DatabaseManager {
         // build where clause conditions in order
         let mut conditions = Vec::new();
         if !query.is_empty() {
-            conditions.push("audio_transcriptions.audio_chunk_id IN (SELECT audio_chunk_id FROM audio_transcriptions_fts WHERE audio_transcriptions_fts MATCH ? ORDER BY rank LIMIT 5000)");
+            conditions.push("audio_transcriptions.audio_chunk_id IN (SELECT at_inner.audio_chunk_id FROM audio_transcriptions_fts JOIN audio_transcriptions at_inner ON at_inner.id = audio_transcriptions_fts.rowid WHERE audio_transcriptions_fts MATCH ? ORDER BY audio_transcriptions_fts.rank LIMIT 5000)");
         }
         if start_time.is_some() {
             conditions.push("audio_transcriptions.timestamp >= ?");
@@ -2657,7 +2657,7 @@ impl DatabaseManager {
                      JOIN ocr_text ON frames.id = ocr_text.frame_id"
                 } else {
                     "ocr_text_fts
-                     JOIN ocr_text ON ocr_text_fts.frame_id = ocr_text.frame_id
+                     JOIN ocr_text ON ocr_text.rowid = ocr_text_fts.rowid
                      JOIN frames ON ocr_text.frame_id = frames.id"
                 },
                 where_clause = if ocr_query.is_empty() {
@@ -2700,7 +2700,7 @@ impl DatabaseManager {
                 table = if query.is_empty() {
                     "audio_transcriptions"
                 } else {
-                    "audio_transcriptions_fts JOIN audio_transcriptions ON audio_transcriptions_fts.audio_chunk_id = audio_transcriptions.audio_chunk_id"
+                    "audio_transcriptions_fts JOIN audio_transcriptions ON audio_transcriptions.id = audio_transcriptions_fts.rowid"
                 },
                 speaker_join = if speaker_name.is_some() {
                     "LEFT JOIN speakers ON audio_transcriptions.speaker_id = speakers.id"
@@ -3338,7 +3338,7 @@ impl DatabaseManager {
         let base_sql = if combined_query.is_empty() {
             "ui_monitoring"
         } else {
-            "ui_monitoring_fts JOIN ui_monitoring ON ui_monitoring_fts.ui_id = ui_monitoring.id"
+            "ui_monitoring_fts JOIN ui_monitoring ON ui_monitoring.id = ui_monitoring_fts.rowid"
         };
 
         let where_clause = if combined_query.is_empty() {
@@ -4244,7 +4244,7 @@ impl DatabaseManager {
                 crate::text_normalizer::sanitize_fts5_query(query)
             };
             conditions.push(
-                "(f.id IN (SELECT frame_id FROM ocr_text_fts WHERE text MATCH ? ORDER BY rank LIMIT 5000) OR f.id IN (SELECT id FROM frames_fts WHERE frames_fts MATCH ? ORDER BY rank LIMIT 5000))",
+                "(f.id IN (SELECT ot.frame_id FROM ocr_text_fts JOIN ocr_text ot ON ot.rowid = ocr_text_fts.rowid WHERE ocr_text_fts.text MATCH ? ORDER BY ocr_text_fts.rank LIMIT 5000) OR f.id IN (SELECT id FROM frames_fts WHERE frames_fts MATCH ? ORDER BY rank LIMIT 5000))",
             );
             fts_match
         } else {
@@ -4574,7 +4574,7 @@ LIMIT ? OFFSET ?
                 crate::text_normalizer::sanitize_fts5_query(query)
             };
             conditions.push(
-                "(f.id IN (SELECT frame_id FROM ocr_text_fts WHERE text MATCH ? ORDER BY rank LIMIT 5000) OR f.id IN (SELECT id FROM frames_fts WHERE frames_fts MATCH ? ORDER BY rank LIMIT 5000))",
+                "(f.id IN (SELECT ot.frame_id FROM ocr_text_fts JOIN ocr_text ot ON ot.rowid = ocr_text_fts.rowid WHERE ocr_text_fts.text MATCH ? ORDER BY ocr_text_fts.rank LIMIT 5000) OR f.id IN (SELECT id FROM frames_fts WHERE frames_fts MATCH ? ORDER BY rank LIMIT 5000))",
             );
             fts_match
         } else {
