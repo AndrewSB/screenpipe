@@ -543,6 +543,9 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
                     let mut handle_guard = recording_state.handle.lock().await;
                     if let Some(handle) = handle_guard.take() {
                         handle.shutdown();
+                        // Give the tree walker and other tasks time to notice the stop
+                        // signal and exit cleanly before we tear down the runtime.
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                         info!("Screenpipe recording stopped successfully");
                     } else {
                         debug!("No recording running to stop");
