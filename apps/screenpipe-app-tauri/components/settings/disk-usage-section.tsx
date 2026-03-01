@@ -402,39 +402,37 @@ export function DiskUsageSection() {
                   </span>
                 </div>
                 {/* Delete Old Recordings */}
-                <div className="pt-2">
+                <div className="pt-2 space-y-1.5">
                   <AlertDialog>
-                    <div className="flex items-center gap-1.5">
-                      <Select
-                        value={deleteOlderThanDays}
-                        onValueChange={setDeleteOlderThanDays}
+                    <Select
+                      value={deleteOlderThanDays}
+                      onValueChange={setDeleteOlderThanDays}
+                    >
+                      <SelectTrigger className="h-7 text-xs w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="30">30 days</SelectItem>
+                        <SelectItem value="90">90 days</SelectItem>
+                        <SelectItem value="180">180 days</SelectItem>
+                        <SelectItem value="365">365 days</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs w-full"
+                        disabled={deletingRecordings}
                       >
-                        <SelectTrigger className="h-7 text-xs w-[100px]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="30">30 days</SelectItem>
-                          <SelectItem value="90">90 days</SelectItem>
-                          <SelectItem value="180">180 days</SelectItem>
-                          <SelectItem value="365">365 days</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <AlertDialogTrigger asChild>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7 text-xs"
-                          disabled={deletingRecordings}
-                        >
-                          {deletingRecordings ? (
-                            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                          ) : (
-                            <Trash2 className="h-3 w-3 mr-1" />
-                          )}
-                          delete
-                        </Button>
-                      </AlertDialogTrigger>
-                    </div>
+                        {deletingRecordings ? (
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3 w-3 mr-1" />
+                        )}
+                        delete old recordings
+                      </Button>
+                    </AlertDialogTrigger>
                     <AlertDialogContent>
                       <AlertDialogHeader>
                         <AlertDialogTitle>
