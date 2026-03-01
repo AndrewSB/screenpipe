@@ -16,7 +16,7 @@ import {
 import {
   RefreshCw,
   HardDrive,
-  Video,
+  Monitor,
   Database,
   Calculator,
   FileText,
@@ -24,6 +24,7 @@ import {
   Loader2,
   Trash2,
   FolderOpen,
+  Mic,
 } from "lucide-react";
 import { Skeleton } from "../ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -297,7 +298,7 @@ export function DiskUsageSection() {
           <CardContent className="px-3 py-2.5">
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs text-muted-foreground">recordings</span>
-              <Video
+              <Monitor
                 className={cn(
                   "h-3 w-3 text-muted-foreground",
                   isLoading && "animate-pulse"
@@ -357,20 +358,20 @@ export function DiskUsageSection() {
         </Card>
       </div>
 
-      {/* Recordings + System side-by-side */}
-      <div className="grid grid-cols-2 gap-2">
-        {/* Recordings */}
+      {/* Video + Audio + System */}
+      <div className="grid grid-cols-3 gap-2">
+        {/* Screen */}
         <Card className={cn("border-border bg-card", isLoading && "opacity-75")}>
           <CardContent className="px-3 py-2.5 space-y-2">
             <div className="flex items-center space-x-2.5">
-              <Video
+              <Monitor
                 className={cn(
                   "h-4 w-4 text-muted-foreground shrink-0",
                   isLoading && "animate-pulse"
                 )}
               />
               <h3 className="text-sm font-medium text-foreground">
-                recordings
+                screen
               </h3>
               <OpenInFinderButton path={diskUsage?.paths?.data_dir} />
             </div>
@@ -394,16 +395,10 @@ export function DiskUsageSection() {
                       <span className="font-medium shrink-0">{m.size}</span>
                     </div>
                   ))}
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-muted-foreground">audio</span>
-                  <span className="font-medium">
-                    {diskUsage?.media.audios_size || "0 KB"}
-                  </span>
-                </div>
                 <div className="flex items-center justify-between text-xs pt-1 border-t">
-                  <span className="font-medium">total</span>
+                  <span className="font-medium">total screen</span>
                   <span className="font-bold">
-                    {diskUsage?.media.total_media_size || "0 KB"}
+                    {diskUsage?.media.screen_size || "0 KB"}
                   </span>
                 </div>
                 {/* Delete Old Recordings */}
@@ -462,6 +457,38 @@ export function DiskUsageSection() {
                       </AlertDialogFooter>
                     </AlertDialogContent>
                   </AlertDialog>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Audio */}
+        <Card className={cn("border-border bg-card", isLoading && "opacity-75")}>
+          <CardContent className="px-3 py-2.5 space-y-2">
+            <div className="flex items-center space-x-2.5">
+              <Mic
+                className={cn(
+                  "h-4 w-4 text-muted-foreground shrink-0",
+                  isLoading && "animate-pulse"
+                )}
+              />
+              <h3 className="text-sm font-medium text-foreground">
+                audio
+              </h3>
+              <OpenInFinderButton path={diskUsage?.paths?.data_dir} />
+            </div>
+            {isLoading ? (
+              <div className="space-y-1.5 ml-[26px]">
+                <Skeleton className="h-4 w-28" />
+              </div>
+            ) : (
+              <div className="space-y-1.5 ml-[26px]">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">total audio</span>
+                  <span className="font-bold">
+                    {diskUsage?.media.audios_size || "0 KB"}
+                  </span>
                 </div>
               </div>
             )}
