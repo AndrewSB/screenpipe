@@ -14,10 +14,12 @@ export interface MonitorUsage {
 }
 
 export interface DiskUsedByMedia {
-  videos_size: string;
+  screen_size: string;
   audios_size: string;
   total_media_size: string;
   monitors: MonitorUsage[];
+  screen_bytes?: number;
+  audios_bytes?: number;
 }
 
 export interface DiskUsedByOther {

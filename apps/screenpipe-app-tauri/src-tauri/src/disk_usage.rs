@@ -76,10 +76,12 @@ pub struct MonitorUsage {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DiskUsedByMedia {
-    pub videos_size: String,
+    pub screen_size: String,
     pub audios_size: String,
     pub total_media_size: String,
     pub monitors: Vec<MonitorUsage>,
+    pub screen_bytes: u64,
+    pub audios_bytes: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -356,7 +358,7 @@ pub async fn disk_usage(
         info!("Force refresh requested, bypassing cache");
     }
 
-    let mut total_video_size: u64 = 0;
+    let mut total_screen_size: u64 = 0;
     let mut total_audio_size: u64 = 0;
 
     // Calculate total data size
@@ -412,7 +414,7 @@ pub async fn disk_usage(
         info!("Scanning data directory recursively for media files");
         fn scan_media_files(
             dir: &Path,
-            video_size: &mut u64,
+            screen_size: &mut u64,
             audio_size: &mut u64,
             monitor_sizes: &mut std::collections::HashMap<String, u64>,
         ) -> io::Result<()> {
@@ -422,11 +424,14 @@ pub async fn disk_usage(
                 r"^(.+?)_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.\w+$"
             ).ok();
 
+            // Known audio extensions
+            const AUDIO_EXTS: &[&str] = &["mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"];
+
             for entry in fs::read_dir(dir)? {
                 let entry = entry?;
                 let path = entry.path();
                 if path.is_dir() {
-                    scan_media_files(&path, video_size, audio_size, monitor_sizes)?;
+                    scan_media_files(&path, screen_size, audio_size, monitor_sizes)?;
                 } else if path.is_file() {
                     let size = entry.metadata()?.len();
                     let file_name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -445,7 +450,7 @@ pub async fn disk_usage(
                         {
                             *audio_size += size;
                         } else {
-                            *video_size += size;
+                            *screen_size += size;
                             // Track per-monitor
                             if let Some(ref re) = monitor_re {
                                 if let Some(caps) = re.captures(&file_name) {
@@ -454,15 +459,17 @@ pub async fn disk_usage(
                                 }
                             }
                         }
+                    } else if AUDIO_EXTS.contains(&extension.as_str()) {
+                        *audio_size += size;
                     } else {
-                        match extension.as_str() {
-                            "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" | "wma" => {
-                                *audio_size += size;
+                        // Everything else is screen data (images, other video formats, etc.)
+                        *screen_size += size;
+                        // Track per-monitor for non-audio files too
+                        if let Some(ref re) = monitor_re {
+                            if let Some(caps) = re.captures(&file_name) {
+                                let name = caps[1].to_string();
+                                *monitor_sizes.entry(name).or_insert(0) += size;
                             }
-                            "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" | "m4v" => {
-                                *video_size += size;
-                            }
-                            _ => {}
                         }
                     }
                 }
@@ -470,21 +477,21 @@ pub async fn disk_usage(
             Ok(())
         }
 
-        if let Err(e) = scan_media_files(&data_dir, &mut total_video_size, &mut total_audio_size, &mut monitor_sizes) {
+        if let Err(e) = scan_media_files(&data_dir, &mut total_screen_size, &mut total_audio_size, &mut monitor_sizes) {
             warn!("Error scanning media files: {}", e);
         }
 
         info!(
-            "Video files total: {} bytes, Audio files total: {} bytes, monitors: {:?}",
-            total_video_size, total_audio_size, monitor_sizes.keys().collect::<Vec<_>>()
+            "Screen files total: {} bytes, Audio files total: {} bytes, monitors: {:?}",
+            total_screen_size, total_audio_size, monitor_sizes.keys().collect::<Vec<_>>()
         );
     } else {
         warn!("Data directory does not exist: {}", data_dir.display());
     }
 
-    let videos_size_str = readable(total_video_size);
+    let screen_size_str = readable(total_screen_size);
     let audios_size_str = readable(total_audio_size);
-    let total_media_size_calculated = total_video_size + total_audio_size;
+    let total_media_size_calculated = total_screen_size + total_audio_size;
     let total_media_size_str = readable(total_media_size_calculated);
 
     // Calculate database size (db.sqlite and related files)
@@ -594,10 +601,12 @@ pub async fn disk_usage(
 
     let disk_usage = DiskUsage {
         media: DiskUsedByMedia {
-            videos_size: videos_size_str,
+            screen_size: screen_size_str,
             audios_size: audios_size_str,
             total_media_size: total_media_size_str,
             monitors,
+            screen_bytes: total_screen_size,
+            audios_bytes: total_audio_size,
         },
         other: DiskUsedByOther {
             database_size: readable(database_size),
